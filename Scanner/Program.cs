@@ -27,9 +27,10 @@ namespace IngameScript
         IMyTextPanel overlayLCD;
         IMyCameraBlock viewCamera;
         int loopsPerTickLimit = 10;
-        float scanRange = 5000;
+        float scanRange = 3000;
         float azimuthLimit = 20;
         float elevationLimit = 15;
+        float angleStep = 2;
         List<ScanInfo> scanInfos;
         DebugAPI Draw;
 
@@ -59,6 +60,9 @@ namespace IngameScript
 
             SEUtils.StartCoroutine(UpdateOverlay());
             SEUtils.StartCoroutine(UpdateKnowObjects());
+            SEUtils.StartCoroutine(ScanArea());
+
+            Draw.RemoveAll();
         }
 
         public void Save()
@@ -68,38 +72,43 @@ namespace IngameScript
 
         public void Main(string argument, UpdateType updateSource)
         {
-            // Project test
-
-            Draw.DrawPoint(viewCamera.WorldMatrix.Translation, Color.Gray, 0.05f, 30, true);
-            Vector3D direction = viewCamera.WorldMatrix.Forward;
-            Vector3D planeNormal = viewCamera.WorldMatrix.Backward;
-            var res = Vector3D.ProjectOnPlane(ref direction, ref planeNormal);
-            Draw.DrawPoint(viewCamera.WorldMatrix.Translation + res, Color.Red, 0.03f, 30, true);
-
-            return;
-
-            if (updateSource.HasFlag(UpdateType.Update100))
-            {
-                Draw.RemoveAll();
-
-            }
             if (SEUtils.RuntimeUpdate(argument, updateSource))
             {
-                foreach (var item in scanCameras.Where(x => x.CanScan(scanRange)))
+            }
+        }
+
+        IEnumerator ScanArea()
+        {
+            float currentAzimuth = -azimuthLimit;
+            float currentElevation = -elevationLimit;
+
+            while (true)
+            {
+                yield return new WaitForConditionMet(() => scanCameras.Any(x => x.CanScan(scanRange)), -1, 10);
+
+                var cam = scanCameras.First(x => x.CanScan(scanRange));
+                var rc = cam.Raycast(scanRange, currentElevation, currentAzimuth);
+                currentAzimuth += angleStep;
+                Echo("a " + currentAzimuth + " e " + currentElevation);
+                if (currentAzimuth >= azimuthLimit)
                 {
-                    var rc = item.Raycast(scanRange);
-                    
-                    if (!rc.IsEmpty())
+                    currentAzimuth = -azimuthLimit;
+                    currentElevation += angleStep;
+                    if (currentElevation >= elevationLimit)
                     {
-                        if (!scanInfos.Any(x => x.DetectedEntity.EntityId == rc.EntityId))
+                        currentElevation = -elevationLimit;
+                    }
+                }
+                if (!rc.IsEmpty())
+                {
+                    if (!scanInfos.Any(x => x.DetectedEntity.EntityId == rc.EntityId))
+                    {
+                        scanInfos.Add(new ScanInfo()
                         {
-                            scanInfos.Add(new ScanInfo()
-                                {
-                                    DetectedEntity = rc,
-                                    TimeStamp = DateTime.Now
-                                }
-                            );
+                            DetectedEntity = rc,
+                            TimeStamp = DateTime.Now
                         }
+                        );
                     }
                 }
             }
@@ -116,7 +125,6 @@ namespace IngameScript
                     yield return new WaitForConditionMet(() => scanCameras.Any(x => x.CanScan(item.PredictPosition())));
                     var position = item.PredictPosition();
 
-                    Draw.DrawLine(scanCameras.First(x => x.CanScan(item.PredictPosition())).GetPosition(), item.PredictPosition(), Color.Cyan);
                     var rc = scanCameras.First(x => x.CanScan(item.PredictPosition())).Raycast(position);
                     if (!rc.IsEmpty())
                     {
@@ -128,16 +136,19 @@ namespace IngameScript
                         else
                         {
                             scanInfos.Add(new ScanInfo()
-                                {
-                                    DetectedEntity = rc,
-                                    TimeStamp = DateTime.Now
-                                }
+                            {
+                                DetectedEntity = rc,
+                                TimeStamp = DateTime.Now
+                            }
                             );
                         }
                     }
                     else
                     {
-                        scanInfos.Remove(item);
+                        if ((DateTime.Now - item.TimeStamp).TotalSeconds >= 30)
+                        {
+                            scanInfos.Remove(item);
+                        }
                     }
 
                     currentLoops++;
@@ -147,7 +158,7 @@ namespace IngameScript
                         currentLoops = 0;
                     }
                 }
-                yield return new WaitForMilliseconds(1000);
+                yield return new WaitForMilliseconds(100);
             }
         }
 
@@ -161,27 +172,24 @@ namespace IngameScript
 
                 foreach (var item in infos)
                 {
-                    yield return new WaitForConditionMet(() =>
-                    {
-                        var position = item.PredictPosition();
-                        var direction = position - viewCamera.GetPosition();
-                        direction.Normalize();
-                        direction *= 5;
-                        return viewCamera.CanScan(viewCamera.GetPosition() + direction);
-                    }, -1, 200);
-                    var positionF = item.PredictPosition();
-                    var directionF = positionF - viewCamera.WorldAABB.Center;
-                    directionF.Normalize();
-                    directionF *= 5;
-                    var rc = viewCamera.Raycast(viewCamera.GetPosition() + directionF);
-                    Draw.DrawLine(viewCamera.GetPosition(), viewCamera.GetPosition() + directionF, Color.White, 0.03f, -1, true);
+                    Vector3D halfLCD = new Vector3D(2.5d / 2, 2.5d / 2, 0.0001d);
+                    BoundingBoxD localBB = new BoundingBoxD(halfLCD, -halfLCD);
+                    var matrix = overlayLCD.WorldMatrix;
+                    matrix.Translation += matrix.Forward * 2.5d / 2;
+                    MyOrientedBoundingBoxD obb = new MyOrientedBoundingBoxD(localBB, matrix);
+                    Vector3D direction = item.PredictPosition() - viewCamera.WorldMatrix.Translation;
+                    direction.Normalize();
+                    direction *= 5;
+                    LineD line = new LineD(viewCamera.WorldMatrix.Translation, viewCamera.WorldMatrix.Translation + direction);
+                    var res = obb.Intersects(ref line);
 
-                    if (!rc.IsEmpty())
+
+                    if (res != null)
                     {
                         Vector3D referenceWorldPosition = viewCamera.WorldMatrix.Translation; // block.WorldMatrix.Translation is the same as block.GetPosition() btw
-                        // Convert worldPosition into a world direction
-                        Vector3D worldDirection = ((Vector3D)rc.HitPosition) - referenceWorldPosition; // This is a vector starting at the reference block pointing at your desired position
-                        // Convert worldDirection into a local direction
+                        direction /= 5;
+                        Vector3D worldDirection = (matrix.Translation + direction * (double)res) - referenceWorldPosition; // This is a vector starting at the reference block pointing at your desired position
+                                                                                                                           // Convert worldDirection into a local direction
                         Vector3D localCoordinates = Vector3D.TransformNormal(worldDirection, MatrixD.Transpose(viewCamera.WorldMatrix));
 
                         Vector3D multiplier = new Vector3D(Vector3D.Forward.X == 0 ? 1 : 0, Vector3D.Forward.Y == 0 ? 1 : 0, Vector3D.Forward.Z == 0 ? 1 : 0);
@@ -191,21 +199,18 @@ namespace IngameScript
                         screenPos *= 204.8f;
                         if (screenPos.X < 512 && screenPos.X > 0 && screenPos.Y < 512 && screenPos.Y > 0)
                         {
-                            Vector2I screenInteger = new Vector2I((int)screenPos.X, (int)screenPos.Y);
+                            Vector2I screenInteger = new Vector2I((int)screenPos.X, 512 - (int)screenPos.Y);
                             df.Add(
                                 new MySprite()
                                 {
                                     Type = SpriteType.TEXTURE,
                                     Data = "SquareSimple",
                                     Position = screenInteger,
-                                    Size = new Vector2(5, 5)
+                                    Size = new Vector2(1, 1),
+                                    Color = Color.Red
                                 }
                             );
                         }
-                    }
-                    else
-                    {
-
                     }
 
                     currentLoops++;
@@ -216,7 +221,7 @@ namespace IngameScript
                     }
                 }
                 df.Dispose();
-                yield return new WaitForMilliseconds(1000);
+                yield return new WaitForNextTick();
             }
         }
 
@@ -326,7 +331,7 @@ namespace IngameScript
                 Vector3D acceleration = velocity - (lastVelocity.Length() == 0 ? velocity : lastVelocity);
                 lastVelocity = velocity;
                 // pPredict = p0 + v0 * t + (a * t^2) / 2
-                return DetectedEntity.Position + velocity * elapsedSeconds + acceleration * Math.Pow(elapsedSeconds, 2) / 2;
+                return ((Vector3D)DetectedEntity.Position) + velocity * elapsedSeconds + acceleration * Math.Pow(elapsedSeconds, 2) / 2;
             }
         }
     }
