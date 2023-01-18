@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using VRage;
 using VRage.Collections;
 using VRage.Game;
@@ -28,18 +29,41 @@ namespace IngameScript
         IMyCameraBlock viewCamera;
         int loopsPerTickLimit = 10;
         float scanRange = 3000;
-        float azimuthLimit = 5;
-        float elevationLimit = 5;
-        float angleStep = 1;
+        float azimuthLimit = 3;
+        float elevationLimit = 3;
+        float angleStep = 0.7f;
         List<ScanInfo> scanInfos;
         DebugAPI Draw;
         List<Vector2I> fixedPoints = new List<Vector2I>();
+        List<string> cameraRaycastClaim;
 
         public Program()
         {
             Draw = new DebugAPI(this);
+            MyIni ini = new MyIni();
 
-            SEUtils.Setup(this, UpdateFrequency.Update100, true, "Scanner");
+            SEUtils.Setup(this, UpdateFrequency.Update10, true, "Scanner");
+
+            if (SEUtils.CurrentProgrammableBlock.CustomData == "")
+            {
+                string viewConfigSectionName = "View-Config";
+                ini.AddSection(viewConfigSectionName);
+                ini.Set(viewConfigSectionName, "Transparent-LCD-Overlay", "Transparent LCD View");
+                ini.SetComment(viewConfigSectionName, "Transparent-LCD-Overlay", "The lcd that is located infront of your View-Cam");
+
+                ini.Set(viewConfigSectionName, "View-Camera", "Camera View");
+                ini.SetComment(viewConfigSectionName, "View-Camera", "The camera that is located behind your Transparent-LCD-Overlay");
+
+                SEUtils.CurrentProgrammableBlock.CustomData = ini.ToString();
+
+                throw new Exception("Please configure this script. See CustomData");
+            }
+            else
+            {
+                ini.TryParse(SEUtils.CurrentProgrammableBlock.CustomData);
+            }
+
+            cameraRaycastClaim = new List<string>();
             Echo(Vector3D.Forward.ToString());
             scanInfos = new List<ScanInfo>();
 
@@ -72,27 +96,20 @@ namespace IngameScript
             matrix.Translation += matrix.Forward * 2.5d / 2;
             MyOrientedBoundingBoxD obb = new MyOrientedBoundingBoxD(localBB, matrix);
 
-            Vector3D res;
-            Vector3D.CreateFromAzimuthAndElevation(-azimuthLimit * Math.PI / 180, -elevationLimit * Math.PI / 180, out res);
-            Vector3D worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
-            worldDir *= 10;
-            Draw.DrawLine(viewCamera.GetPosition(), viewCamera.GetPosition() + worldDir, Color.Red);
-            fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
+            double azimuthLimitRad = MathHelperD.ToRadians(azimuthLimit);
+            double elevationLimitRad = MathHelperD.ToRadians(elevationLimit);
 
-            Vector3D.CreateFromAzimuthAndElevation(-azimuthLimit * Math.PI / 180, -elevationLimit * Math.PI / 180, out res);
-            worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
-            worldDir *= 10;
-            fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
-
-            Vector3D.CreateFromAzimuthAndElevation(-azimuthLimit * Math.PI / 180, -elevationLimit * Math.PI / 180, out res);
-            worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
-            worldDir *= 10;
-            fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
-
-            Vector3D.CreateFromAzimuthAndElevation(-azimuthLimit * Math.PI / 180, -elevationLimit * Math.PI / 180, out res);
-            worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
-            worldDir *= 10;
-            fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
+            for (int a = 0; a < 2; a++)
+            {
+                for (int e = 0; e < 2; e++)
+                {
+                    Vector3D res;
+                    Vector3D.CreateFromAzimuthAndElevation(azimuthLimitRad * (a == 0 ? 1 : -1), elevationLimitRad * (e == 0 ? 1 : -1), out res);
+                    Vector3D worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
+                    worldDir *= 10;
+                    fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
+                }
+            }
         }
 
         public void Save()
@@ -104,6 +121,7 @@ namespace IngameScript
         {
             if (SEUtils.RuntimeUpdate(argument, updateSource))
             {
+                var res = updateSource & UpdateType.IGC;
             }
         }
 
@@ -144,7 +162,9 @@ namespace IngameScript
 
             while (true)
             {
-                yield return new WaitForConditionMet(() => scanCameras.Any(x => x.CanScan(scanRange)), -1, 10);
+                cameraRaycastClaim.Add("scan");
+                yield return new WaitForConditionMet(() => scanCameras.Any(x => x.CanScan(scanRange)) && cameraRaycastClaim.First() == "scan", -1, 10);
+                cameraRaycastClaim.Remove("scan");
 
                 var cam = scanCameras.First(x => x.CanScan(scanRange));
                 var rc = cam.Raycast(scanRange, currentElevation, currentAzimuth);
@@ -184,13 +204,14 @@ namespace IngameScript
                 foreach (var item in infos)
                 {
                     var position = item.PredictPosition();
+                    cameraRaycastClaim.Add("update");
                     yield return new WaitForConditionMet(() =>
                     {
                         position = item.PredictPosition();
-                        return scanCameras.Any(x => x.CanScan(position));
+                        return scanCameras.Any(x => x.CanScan(position)) && cameraRaycastClaim.First() == "update";
                     }, -1, 300);
-                    Draw.DrawPoint(position, Color.White, 1, 1, false);
-
+                    cameraRaycastClaim.Remove("update");
+                    Draw.DrawLine(viewCamera.GetPosition(), position, Color.Red, 0.2f, 10, true);
                     var rc = scanCameras.First(x => x.CanScan(position)).Raycast(position);
 
                     if (!rc.IsEmpty())
@@ -204,16 +225,16 @@ namespace IngameScript
                         else
                         {
                             scanInfos.Add(new ScanInfo()
-                            {
-                                DetectedEntity = rc,
-                                TimeStamp = DateTime.Now
-                            }
+                                {
+                                    DetectedEntity = rc,
+                                    TimeStamp = DateTime.Now
+                                }
                             );
                         }
                     }
                     else
                     {
-                        if ((DateTime.Now - item.TimeStamp).TotalSeconds >= 30)
+                        if ((DateTime.Now - item.TimeStamp).TotalSeconds >= 15)
                         {
                             scanInfos.Remove(item);
                         }
@@ -309,8 +330,8 @@ namespace IngameScript
                                 Type = SpriteType.TEXTURE,
                                 Data = "SquareSimple",
                                 Position = item,
-                                Size = new Vector2(3, 3),
-                                Color = Color.Cyan
+                                Size = new Vector2(1, 1),
+                                Color = Color.BlueViolet
                             }
                         );
                 }
