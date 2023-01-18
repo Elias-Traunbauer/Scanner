@@ -28,16 +28,17 @@ namespace IngameScript
         IMyCameraBlock viewCamera;
         int loopsPerTickLimit = 10;
         float scanRange = 3000;
-        float azimuthLimit = 20;
-        float elevationLimit = 15;
-        float angleStep = 2;
+        float azimuthLimit = 5;
+        float elevationLimit = 5;
+        float angleStep = 1;
         List<ScanInfo> scanInfos;
         DebugAPI Draw;
+        List<Vector2I> fixedPoints = new List<Vector2I>();
 
         public Program()
         {
             Draw = new DebugAPI(this);
-            Echo(Draw.ModDetected.ToString());
+
             SEUtils.Setup(this, UpdateFrequency.Update100, true, "Scanner");
             Echo(Vector3D.Forward.ToString());
             scanInfos = new List<ScanInfo>();
@@ -53,8 +54,6 @@ namespace IngameScript
                 item.EnableRaycast = true;
             }
             scanCameras.Remove(viewCamera);
-            Echo(scanCameras.Count().ToString());
-            Echo(overlayLCD.SurfaceSize.ToString());
 
             overlayLCD.ContentType = ContentType.SCRIPT;
 
@@ -63,6 +62,37 @@ namespace IngameScript
             SEUtils.StartCoroutine(ScanArea());
 
             Draw.RemoveAll();
+            Vector3D test;
+            Vector3D.CreateFromAzimuthAndElevation(0, 0, out test);
+            Echo(test.ToString());
+
+            Vector3D halfLCD = new Vector3D(2.5d / 2, 2.5d / 2, 0.0001d);
+            BoundingBoxD localBB = new BoundingBoxD(halfLCD, -halfLCD);
+            var matrix = overlayLCD.WorldMatrix;
+            matrix.Translation += matrix.Forward * 2.5d / 2;
+            MyOrientedBoundingBoxD obb = new MyOrientedBoundingBoxD(localBB, matrix);
+
+            Vector3D res;
+            Vector3D.CreateFromAzimuthAndElevation(-azimuthLimit * Math.PI / 180, -elevationLimit * Math.PI / 180, out res);
+            Vector3D worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
+            worldDir *= 10;
+            Draw.DrawLine(viewCamera.GetPosition(), viewCamera.GetPosition() + worldDir, Color.Red);
+            fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
+
+            Vector3D.CreateFromAzimuthAndElevation(-azimuthLimit * Math.PI / 180, -elevationLimit * Math.PI / 180, out res);
+            worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
+            worldDir *= 10;
+            fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
+
+            Vector3D.CreateFromAzimuthAndElevation(-azimuthLimit * Math.PI / 180, -elevationLimit * Math.PI / 180, out res);
+            worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
+            worldDir *= 10;
+            fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
+
+            Vector3D.CreateFromAzimuthAndElevation(-azimuthLimit * Math.PI / 180, -elevationLimit * Math.PI / 180, out res);
+            worldDir = Vector3D.TransformNormal(res, viewCamera.WorldMatrix);
+            worldDir *= 10;
+            fixedPoints.Add((Vector2I)WorldDirToLcd(overlayLCD, viewCamera, worldDir, obb));
         }
 
         public void Save()
@@ -77,6 +107,36 @@ namespace IngameScript
             }
         }
 
+        Vector2I? WorldDirToLcd(IMyTextPanel lcd, IMyCameraBlock cam, Vector3D worldDir, MyOrientedBoundingBoxD obb)
+        {
+            worldDir.Normalize();
+            worldDir *= 5;
+            LineD line = new LineD(cam.WorldMatrix.Translation, cam.WorldMatrix.Translation + worldDir);
+            var res = obb.Intersects(ref line);
+
+            if (res != null)
+            {
+                Vector3D referenceWorldPosition = viewCamera.WorldMatrix.Translation; // block.WorldMatrix.Translation is the same as block.GetPosition() btw
+                worldDir /= 5;
+                Vector3D worldDirection = (lcd.WorldMatrix.Translation + worldDir * (double)res) - referenceWorldPosition; // This is a vector starting at the reference block pointing at your desired position
+                                                                                                                            // Convert worldDirection into a local direction
+                Vector3D localCoordinates = Vector3D.TransformNormal(worldDirection, MatrixD.Transpose(viewCamera.WorldMatrix));
+
+                Vector3D multiplier = new Vector3D(Vector3D.Forward.X == 0 ? 1 : 0, Vector3D.Forward.Y == 0 ? 1 : 0, Vector3D.Forward.Z == 0 ? 1 : 0);
+                localCoordinates *= multiplier;
+                Vector2D screenPos = new Vector2D(localCoordinates.X, localCoordinates.Y);
+                screenPos += new Vector2D(2.5d / 2, 2.5d / 2);
+                screenPos *= 204.8f;
+                return new Vector2I((int)screenPos.X, 512 - (int)screenPos.Y);
+            }
+            return null;
+        }
+
+        double GetSecondsAgo(DateTime date)
+        {
+            return (DateTime.Now - date).TotalSeconds;
+        }
+
         IEnumerator ScanArea()
         {
             float currentAzimuth = -azimuthLimit;
@@ -89,7 +149,7 @@ namespace IngameScript
                 var cam = scanCameras.First(x => x.CanScan(scanRange));
                 var rc = cam.Raycast(scanRange, currentElevation, currentAzimuth);
                 currentAzimuth += angleStep;
-                Echo("a " + currentAzimuth + " e " + currentElevation);
+
                 if (currentAzimuth >= azimuthLimit)
                 {
                     currentAzimuth = -azimuthLimit;
@@ -111,6 +171,7 @@ namespace IngameScript
                         );
                     }
                 }
+                yield return new WaitForNextTick();
             }
         }
 
@@ -122,16 +183,23 @@ namespace IngameScript
                 int currentLoops = 0;
                 foreach (var item in infos)
                 {
-                    yield return new WaitForConditionMet(() => scanCameras.Any(x => x.CanScan(item.PredictPosition())));
                     var position = item.PredictPosition();
+                    yield return new WaitForConditionMet(() =>
+                    {
+                        position = item.PredictPosition();
+                        return scanCameras.Any(x => x.CanScan(position));
+                    }, -1, 300);
+                    Draw.DrawPoint(position, Color.White, 1, 1, false);
 
-                    var rc = scanCameras.First(x => x.CanScan(item.PredictPosition())).Raycast(position);
+                    var rc = scanCameras.First(x => x.CanScan(position)).Raycast(position);
+
                     if (!rc.IsEmpty())
                     {
                         if (scanInfos.Any(x => x.DetectedEntity.EntityId == rc.EntityId))
                         {
-                            scanInfos[scanInfos.IndexOf(item)].DetectedEntity = rc;
-                            scanInfos[scanInfos.IndexOf(item)].TimeStamp = DateTime.Now;
+                            int infoIndex = scanInfos.IndexOf(item);
+                            scanInfos[infoIndex].DetectedEntity = rc;
+                            scanInfos[infoIndex].TimeStamp = DateTime.Now;
                         }
                         else
                         {
@@ -158,7 +226,7 @@ namespace IngameScript
                         currentLoops = 0;
                     }
                 }
-                yield return new WaitForMilliseconds(100);
+                yield return new WaitForNextTick();
             }
         }
 
@@ -182,35 +250,48 @@ namespace IngameScript
                     direction *= 5;
                     LineD line = new LineD(viewCamera.WorldMatrix.Translation, viewCamera.WorldMatrix.Translation + direction);
                     var res = obb.Intersects(ref line);
+                    var point = WorldDirToLcd(overlayLCD, viewCamera, item.DetectedEntity.Position - viewCamera.WorldMatrix.Translation, obb);
 
-
-                    if (res != null)
+                    if (point != null)
                     {
-                        Vector3D referenceWorldPosition = viewCamera.WorldMatrix.Translation; // block.WorldMatrix.Translation is the same as block.GetPosition() btw
-                        direction /= 5;
-                        Vector3D worldDirection = (matrix.Translation + direction * (double)res) - referenceWorldPosition; // This is a vector starting at the reference block pointing at your desired position
-                                                                                                                           // Convert worldDirection into a local direction
-                        Vector3D localCoordinates = Vector3D.TransformNormal(worldDirection, MatrixD.Transpose(viewCamera.WorldMatrix));
-
-                        Vector3D multiplier = new Vector3D(Vector3D.Forward.X == 0 ? 1 : 0, Vector3D.Forward.Y == 0 ? 1 : 0, Vector3D.Forward.Z == 0 ? 1 : 0);
-                        localCoordinates *= multiplier;
-                        Vector2D screenPos = new Vector2D(localCoordinates.X, localCoordinates.Y);
-                        screenPos += new Vector2D(2.5d / 2, 2.5d / 2);
-                        screenPos *= 204.8f;
-                        if (screenPos.X < 512 && screenPos.X > 0 && screenPos.Y < 512 && screenPos.Y > 0)
+                        Color color = Color.Gray;
+                        if (GetSecondsAgo(item.TimeStamp) < 5)
                         {
-                            Vector2I screenInteger = new Vector2I((int)screenPos.X, 512 - (int)screenPos.Y);
-                            df.Add(
-                                new MySprite()
-                                {
-                                    Type = SpriteType.TEXTURE,
-                                    Data = "SquareSimple",
-                                    Position = screenInteger,
-                                    Size = new Vector2(1, 1),
-                                    Color = Color.Red
-                                }
-                            );
+                            switch (item.DetectedEntity.Relationship)
+                            {
+                                case MyRelationsBetweenPlayerAndBlock.NoOwnership:
+                                    color = Color.BurlyWood;
+                                    break;
+                                case MyRelationsBetweenPlayerAndBlock.Owner:
+                                    color = Color.ForestGreen;
+                                    break;
+                                case MyRelationsBetweenPlayerAndBlock.FactionShare:
+                                    color = Color.DarkGreen;
+                                    break;
+                                case MyRelationsBetweenPlayerAndBlock.Neutral:
+                                    color = Color.White;
+                                    break;
+                                case MyRelationsBetweenPlayerAndBlock.Enemies:
+                                    color = Color.Red;
+                                    break;
+                                case MyRelationsBetweenPlayerAndBlock.Friends:
+                                    color = Color.Blue;
+                                    break;
+                                default:
+                                    break;
+                            }
                         }
+
+                        df.Add(
+                            new MySprite()
+                            {
+                                Type = SpriteType.TEXTURE,
+                                Data = "SquareSimple",
+                                Position = point,
+                                Size = new Vector2(2, 2),
+                                Color = color
+                            }
+                        );
                     }
 
                     currentLoops++;
@@ -220,8 +301,48 @@ namespace IngameScript
                         currentLoops = 0;
                     }
                 }
+                foreach (var item in fixedPoints)
+                {
+                    df.Add(
+                            new MySprite()
+                            {
+                                Type = SpriteType.TEXTURE,
+                                Data = "SquareSimple",
+                                Position = item,
+                                Size = new Vector2(3, 3),
+                                Color = Color.Cyan
+                            }
+                        );
+                }
                 df.Dispose();
                 yield return new WaitForNextTick();
+            }
+        }
+
+
+        public class ScanInfo
+        {
+            public DateTime TimeStamp;
+            private MyDetectedEntityInfo _de;
+            public MyDetectedEntityInfo DetectedEntity
+            {
+
+                get { return _de; }
+                set
+                {
+                    lastVelocity = _de.Velocity;
+                    _de = value;
+                }
+            }
+            public Vector3D lastVelocity = new Vector3D();
+
+            public Vector3D PredictPosition()
+            {
+                double elapsedSeconds = (DateTime.Now - TimeStamp).TotalSeconds;
+                Vector3D velocity = new Vector3D(DetectedEntity.Velocity.X, DetectedEntity.Velocity.Y, DetectedEntity.Velocity.Z);
+                Vector3D acceleration = velocity - (lastVelocity.Length() == 0 ? velocity : lastVelocity);
+                // pPredict = p0 + v0 * t + (a * t^2) / 2
+                return ((Vector3D)DetectedEntity.Position) + velocity * elapsedSeconds + acceleration * Math.Pow(elapsedSeconds, 2) / 2;
             }
         }
 
@@ -316,23 +437,6 @@ namespace IngameScript
             }
 
             void Assign<T>(out T field, object method) => field = (T)method;
-        }
-
-        public class ScanInfo
-        {
-            public DateTime TimeStamp;
-            public MyDetectedEntityInfo DetectedEntity;
-            public Vector3D lastVelocity = new Vector3D();
-
-            public Vector3D PredictPosition()
-            {
-                double elapsedSeconds = (DateTime.Now - TimeStamp).TotalSeconds;
-                Vector3D velocity = new Vector3D(DetectedEntity.Velocity.X, DetectedEntity.Velocity.Y, DetectedEntity.Velocity.Z);
-                Vector3D acceleration = velocity - (lastVelocity.Length() == 0 ? velocity : lastVelocity);
-                lastVelocity = velocity;
-                // pPredict = p0 + v0 * t + (a * t^2) / 2
-                return ((Vector3D)DetectedEntity.Position) + velocity * elapsedSeconds + acceleration * Math.Pow(elapsedSeconds, 2) / 2;
-            }
         }
     }
 }
