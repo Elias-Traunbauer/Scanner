@@ -24,18 +24,18 @@ namespace IngameScript
 {
     partial class Program : MyGridProgram
     {
-        List<IMyCameraBlock> scanCameras;
-        IMyTextPanel overlayLCD;
-        IMyCameraBlock viewCamera;
-        int loopsPerTickLimit = 10;
-        float scanRange = 3000;
-        float azimuthLimit = 3;
-        float elevationLimit = 3;
-        float angleStep = 0.7f;
-        List<ScanInfo> scanInfos;
-        DebugAPI Draw;
-        List<Vector2I> fixedPoints = new List<Vector2I>();
-        List<string> cameraRaycastClaim;
+        readonly List<IMyCameraBlock> scanCameras;
+        readonly IMyTextPanel overlayLCD;
+        readonly IMyCameraBlock viewCamera;
+        readonly int loopsPerTickLimit = 10;
+        readonly float scanRange = 3000;
+        readonly float azimuthLimit = 3;
+        readonly float elevationLimit = 3;
+        readonly float angleStep = 0.7f;
+        readonly List<ScanInfo> scanInfos;
+        readonly DebugAPI Draw;
+        readonly List<Vector2I> fixedPoints = new List<Vector2I>();
+        readonly List<string> cameraRaycastClaim;
 
         public Program()
         {
@@ -157,6 +157,10 @@ namespace IngameScript
 
         IEnumerator ScanArea()
         {
+            yield return new WaitForConditionMet(() => 1 == 0, 1000, -1, () => {
+                Echo("Test");
+                return true;
+            });
             float currentAzimuth = -azimuthLimit;
             float currentElevation = -elevationLimit;
 
@@ -424,7 +428,7 @@ namespace IngameScript
             const float DefaultSeconds = -1;
 
             IMyProgrammableBlock _pb;
-            bool _defaultOnTop;
+            readonly bool _defaultOnTop;
 
             public DebugAPI(MyGridProgram program, bool drawOnTopDefault = false)
             {
